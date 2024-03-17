@@ -1,11 +1,12 @@
+import yaml
+import torch
+import argparse
+import numpy as np
+from pathlib import Path
+from pydantic import BaseModel
+from lora import TRAINING_METHODS
 from typing import Literal, Optional
 
-import yaml
-
-from pydantic import BaseModel
-import torch
-
-from lora import TRAINING_METHODS
 
 PRECISION_TYPES = Literal["fp32", "fp16", "bf16", "float32", "float16", "bfloat16"]
 NETWORK_TYPES = Literal["lierla", "c3lier"]
@@ -102,3 +103,39 @@ def load_config_from_yaml(config_path: str) -> RootConfig:
         root.other = OtherConfig()
 
     return root
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--alpha", type=float, default=1, help="LoRA weight.")
+    parser.add_argument("--rank", type=int, default=4, help="Rank of LoRA.")
+    parser.add_argument("--name", type=str, default="armsslider", help="Name of the slider.")
+    parser.add_argument("--folder_main", type=str, default="datasets/arms", help="The folder to check")
+    parser.add_argument( "--folders", type=str, default='withoutarms/latents, witharms/latents', help="folders with different attribute-scaled images")
+    parser.add_argument( "--scales", type=str, default = '-1, 1', help="scales for different attribute-scaled images")
+    parser.add_argument( "--training_method", type=str, default='full', help="training method")
+    parser.add_argument( "--lr", type=float, default=0.0002, help="learning rate")
+    parser.add_argument( "--epochs", type=int, default=1000, help="number of epochs")
+    parser.add_argument( "--wandb_project", type=str, default="ShapeSliders", help="wandb project name")
+    parser.add_argument( "--max_denoising_steps", type=int, default=1024, help="max denoising steps")
+    parser.add_argument( "--batch_size", type=int, default=16, help="batch size")
+    parser.add_argument( "--guidance_scale", type=float, default=7.5, help="guidance scale")
+    parser.add_argument( "--test_steps", type=int, default=50, help="test steps")
+    return parser.parse_args()
+
+def parse_folders_and_scales(args: argparse.Namespace) -> tuple:
+    folders = args.folders.split(',')
+    folders = [f.strip() for f in folders]
+    scales = args.scales.split(',')
+    scales = [f.strip() for f in scales]
+    scales = [int(s) for s in scales]
+    scales = np.array(scales)
+    folders = np.array(folders)
+    return folders, scales
+
+def parse_save_path(args: argparse.Namespace) -> Path:
+    name = args.name
+    name += f'_alpha{args.alpha}'
+    name += f'_rank{args.rank}'
+    name += f'_{args.training_method}'
+    name += f'_lr{args.lr}'
+    return Path(f'./models/{name}')

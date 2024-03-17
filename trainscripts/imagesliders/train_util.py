@@ -3,7 +3,7 @@ from typing import Optional, Union
 import torch
 
 from transformers import CLIPTextModel, CLIPTokenizer
-from diffusers import UNet2DConditionModel, SchedulerMixin
+from diffusers import UNet2DConditionModel, SchedulerMixin, PriorTransformer
 from diffusers.image_processor import VaeImageProcessor
 from model_util import SDXL_TEXT_ENCODER_TYPE
 from diffusers.utils import randn_tensor
@@ -171,7 +171,36 @@ def predict_noise(
 
     return guided_target
 
+def predict_noise_shape(
+    prior: PriorTransformer,
+    scheduler: SchedulerMixin,
+    timestep: int,  # 現在のタイムステップ
+    latents: torch.FloatTensor,
+    text_embeddings: torch.FloatTensor,  # uncond な text embed と cond な text embed を結合したもの
+    guidance_scale=7.5,
+) -> torch.FloatTensor:
+    # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
+    latent_model_input = torch.cat([latents] * 2)
 
+    latent_model_input = scheduler.scale_model_input(latent_model_input, timestep)
+
+    # predict the noise residual
+    noise_pred = prior(
+        latent_model_input,
+        timestep,
+        proj_embedding=text_embeddings,
+    ).predicted_image_embedding
+
+    # remove the variance
+    noise_pred, _ = noise_pred.split(latent_model_input.shape[2], dim=2)
+
+    # perform guidance
+    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+    guided_target = noise_pred_uncond + guidance_scale * (
+        noise_pred_text - noise_pred_uncond
+    )
+
+    return guided_target
 
 # ref: https://github.com/huggingface/diffusers/blob/0bab447670f47c28df60fbd2f6a0f833f75a16f5/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py#L746
 @torch.no_grad()
@@ -232,6 +261,21 @@ def get_noisy_image(
     # get latents
     init_latents = scheduler.add_noise(init_latents, noise, timestep)
     
+    return init_latents, noise
+
+@torch.no_grad()
+def get_noisy_latent(lat, generator, prior: PriorTransformer, scheduler: SchedulerMixin, total_timesteps: int, dtype: torch.dtype, num_embeddings: int, embedding_dim: int):
+    device = prior.device
+    init_latents = torch.cat([lat], dim=0)
+    shape = init_latents.shape
+    noise = randn_tensor(shape, generator=generator, device=device)
+    time_ = total_timesteps
+    timestep = scheduler.timesteps[time_:time_+1]
+    init_latents = scheduler.add_noise(init_latents, noise, timestep)
+    init_latents = init_latents.to(device, dtype=dtype)
+    init_latents = init_latents.reshape(init_latents.shape[0], num_embeddings, embedding_dim)
+    noise = noise.to(device, dtype=dtype)
+    noise = noise.reshape(noise.shape[0], num_embeddings, embedding_dim)
     return init_latents, noise
 
 
