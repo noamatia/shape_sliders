@@ -117,8 +117,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument( "--epochs", type=int, default=1000, help="number of epochs")
     parser.add_argument( "--wandb_project", type=str, default="ShapeSliders", help="wandb project name")
     parser.add_argument( "--max_denoising_steps", type=int, default=1024, help="max denoising steps")
-    parser.add_argument( "--batch_size", type=int, default=16, help="batch size")
-    parser.add_argument( "--guidance_scale", type=float, default=7.5, help="guidance scale")
+    parser.add_argument( "--batch_size", type=int, default=6, help="batch size")
+    parser.add_argument( "--guidance_scale", type=float, default=4.0, help="guidance scale")
     parser.add_argument( "--test_steps", type=int, default=50, help="test steps")
     return parser.parse_args()
 

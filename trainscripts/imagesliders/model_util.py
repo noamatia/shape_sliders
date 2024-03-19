@@ -8,8 +8,6 @@ from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionXLPipeline,
     AutoencoderKL,
-    PriorTransformer,
-    DiffusionPipeline,
 )
 from diffusers.schedulers import (
     DDIMScheduler,
@@ -286,25 +284,3 @@ def create_noise_scheduler(
         raise ValueError(f"Unknown scheduler name: {name}")
 
     return scheduler
-
-def load_shape_model(device: torch.device, dtype: torch.dtype) -> tuple[
-    PriorTransformer, 
-    CLIPTextModelWithProjection, 
-    CLIPTokenizer, 
-    HeunDiscreteScheduler, 
-    ShapERenderer
-    ]:
-    pipe = DiffusionPipeline.from_pretrained("openai/shap-e", torch_dtype=dtype)
-    prior = pipe.prior
-    tokenizer = pipe.tokenizer
-    text_encoder = pipe.text_encoder
-    noise_scheduler = pipe.scheduler
-    shap_e_renderer = pipe.shap_e_renderer
-    shap_e_renderer.to(device, dtype=dtype)
-    text_encoder.to(device, dtype=dtype)
-    text_encoder.eval()
-    prior.to(device, dtype=dtype)
-    prior.enable_xformers_memory_efficient_attention()
-    prior.requires_grad_(False)
-    prior.eval()
-    return prior, tokenizer, text_encoder, noise_scheduler, shap_e_renderer

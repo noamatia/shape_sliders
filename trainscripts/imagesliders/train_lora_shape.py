@@ -7,20 +7,21 @@ import wandb
 import random
 import argparse
 import train_util
-import model_util
 import config_util
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 import lora_shape as lora
+from diffusers import DiffusionPipeline
+from diffusers.utils import export_to_gif
 
 
 def flush():
     torch.cuda.empty_cache()
     gc.collect()
     
-def empty_text_embedding(tokenizer, text_encoder, device, batch_size):
-    inputs = tokenizer(["", ""], padding=True, return_tensors="pt").to(device)
+def text_embedding(tokenizer, text_encoder, device, batch_size, prompt):
+    inputs = tokenizer([prompt, prompt], padding=True, return_tensors="pt").to(device)
     outputs = text_encoder(**inputs)
     return outputs.text_embeds.repeat_interleave(batch_size, dim=0)
 
@@ -35,21 +36,17 @@ def train(
     
     wandb.init(project=args.wandb_project, config=args)
     
-    # TODO: Is it the right way to load the model?
-    prior, tokenizer, text_encoder, noise_scheduler, shap_e_renderer = model_util.load_shape_model(device, dtype)
+    pipe = DiffusionPipeline.from_pretrained("openai/shap-e", torch_dtype=dtype).to(device)
     network = lora.LoRANetwork(
-        prior, 
+        pipe.prior, 
         args.rank, 
         args.alpha, 
         args.training_method
         ).to(device, dtype=dtype)
     optimizer = torch.optim.Adam(network.prepare_optimizer_params(), args.lr)  
     criteria = torch.nn.MSELoss()
-    num_embeddings = prior.config.num_embeddings
-    embedding_dim = prior.config.embedding_dim
-    
-    test_noise = torch.randn((1, num_embeddings * embedding_dim), device=device, dtype=dtype, layout=torch.strided)
-    test_text_embeddings = empty_text_embedding(tokenizer, text_encoder, device, 1)
+    num_embeddings = pipe.prior.config.num_embeddings
+    embedding_dim = pipe.prior.config.embedding_dim
     
     data = {}
     for scale in scales:
@@ -73,7 +70,7 @@ def train(
         
         for lat1, lat2 in zip(data[-scale_to_look], data[scale_to_look]):
     
-            noise_scheduler.set_timesteps(args.max_denoising_steps, device)
+            pipe.scheduler.set_timesteps(args.max_denoising_steps, device)
             timesteps_to = torch.randint(1, args.max_denoising_steps - 1, (1,)).item()
             
             with torch.no_grad():
@@ -81,8 +78,8 @@ def train(
                 denoised_latents_low, low_noise = train_util.get_noisy_latent(
                     lat1, 
                     torch.manual_seed(seed), 
-                    prior, 
-                    noise_scheduler, 
+                    pipe.prior, 
+                    pipe.scheduler, 
                     timesteps_to, 
                     dtype, 
                     num_embeddings, 
@@ -91,24 +88,24 @@ def train(
                 denoised_latents_high, high_noise = train_util.get_noisy_latent(
                     lat2, 
                     torch.manual_seed(seed), 
-                    prior, 
-                    noise_scheduler, 
+                    pipe.prior, 
+                    pipe.scheduler, 
                     timesteps_to, 
                     dtype, 
                     num_embeddings, 
                     embedding_dim
                     )
                 
-            noise_scheduler.set_timesteps(1000)
-            current_timestep = noise_scheduler.timesteps[int(timesteps_to * 1000 / args.max_denoising_steps)]
+            pipe.scheduler.set_timesteps(1000)
+            current_timestep = pipe.scheduler.timesteps[int(timesteps_to * 1000 / args.max_denoising_steps)]
             optimizer.zero_grad()
             
             network.set_lora_slider(scale=scale_to_look)
-            high_text_embeddings = empty_text_embedding(tokenizer, text_encoder, device, args.batch_size)
+            high_text_embeddings = text_embedding(pipe.tokenizer, pipe.text_encoder, device, args.batch_size, "a chair with arms")
             with network:
                 target_latents_high = train_util.predict_noise_shape(
-                    prior, 
-                    noise_scheduler, 
+                    pipe.prior, 
+                    pipe.scheduler, 
                     current_timestep, 
                     denoised_latents_high, 
                     high_text_embeddings, 
@@ -118,12 +115,12 @@ def train(
             loss_high.backward()
             loss_high_for_epoch += loss_high.item()
             
-            low_text_embeddings = empty_text_embedding(tokenizer, text_encoder, device, args.batch_size)
+            low_text_embeddings = text_embedding(pipe.tokenizer, pipe.text_encoder, device, args.batch_size, "a chair without arms")
             network.set_lora_slider(scale=-scale_to_look)
             with network:
                 target_latents_low = train_util.predict_noise_shape(
-                prior, 
-                noise_scheduler, 
+                pipe.prior, 
+                pipe.scheduler, 
                 current_timestep, 
                 denoised_latents_low, 
                 low_text_embeddings, 
@@ -142,25 +139,9 @@ def train(
         
         if i % args.test_steps == 0:
             for scale in [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1]:
-                noise_scheduler.set_timesteps(50, device)
-                latents = test_noise * noise_scheduler.init_noise_sigma
-                latents = latents.reshape(latents.shape[0], num_embeddings, embedding_dim)
-                latents = latents.to(dtype)
                 network.set_lora_slider(scale)
-                for t in tqdm(noise_scheduler.timesteps, desc=f"scale_{scale}"):
-                    with network:
-                        with torch.no_grad():
-                            guided_target = train_util.predict_noise_shape(
-                                prior, 
-                                noise_scheduler, 
-                                t, 
-                                latents, 
-                                test_text_embeddings, 
-                                args.guidance_scale
-                                )
-                    latents = noise_scheduler.step(guided_target, t, latents).prev_sample
-                image = shap_e_renderer.decode_to_image(latents[0, None, :], device, size=256).cpu().numpy()[11]   
-                log_data[f"scale_{scale}"] = [wandb.Image(image.astype('uint8'), caption=f"scale_{scale}")]
+                images = pipe("a chair").images
+                log_data[f"scale_{scale}"] = wandb.Video(export_to_gif(images[0], f"outputs/{i}_{scale}.gif"))
         
         wandb.log(log_data)
         
