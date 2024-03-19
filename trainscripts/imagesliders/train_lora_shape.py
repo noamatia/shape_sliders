@@ -103,7 +103,7 @@ def train(
             current_timestep = pipe.scheduler.timesteps[int(timesteps_to * 1000 / args.max_denoising_steps)]
             
             network.set_lora_slider(scale=scale_high)
-            high_text_embeddings = text_embedding(pipe.tokenizer, pipe.text_encoder, device, args.batch_size, prompt_low)
+            high_text_embeddings = text_embedding(pipe.tokenizer, pipe.text_encoder, device, args.batch_size, prompt_high)
             with network:
                 target_latents_high = train_util.predict_noise_shape(
                     pipe.prior, 
@@ -117,7 +117,7 @@ def train(
             loss_high.backward()
             loss_high_for_epoch += loss_high.item()
             
-            low_text_embeddings = text_embedding(pipe.tokenizer, pipe.text_encoder, device, args.batch_size, prompt_high)
+            low_text_embeddings = text_embedding(pipe.tokenizer, pipe.text_encoder, device, args.batch_size, prompt_low)
             network.set_lora_slider(scale=scale_low)
             with network:
                 target_latents_low = train_util.predict_noise_shape(
@@ -144,9 +144,11 @@ def train(
             test_scales = scales.tolist() + [0]
             for scale in test_scales:
                 network.set_lora_slider(scale)
-                images = pipe(args.test_prompt).images
-                result_path = results_path / f"{i}_{scale}.gif"
-                log_data[f"scale_{scale}"] = wandb.Video(export_to_gif(images[0], result_path.as_posix()))
+                with network:
+                    with torch.no_grad():
+                        images = pipe(args.test_prompt).images
+                        result_path = results_path / f"{i}_{scale}.gif"
+                        log_data[f"scale_{scale}"] = wandb.Video(export_to_gif(images[0], result_path.as_posix()))
         
         wandb.log(log_data)
         
